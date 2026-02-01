@@ -1,14 +1,23 @@
 import requests
 import os
 import pytz
+import sys
 from datetime import datetime, timedelta
 
 # --- CONFIGURATION ---
 TOKEN = os.environ["TELEGRAM_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
-# YOUR WATCHLIST (Extracted from your image)
-# We use partial names to ensure matches across BSE/NSE variations
+# Detect how the script was started
+# 'schedule' = Automatic 10-min poll
+# 'workflow_dispatch' = You pressed the button
+EVENT_NAME = os.environ.get("GITHUB_EVENT_NAME", "schedule")
+
+# Manual Inputs (Only used if you triggered it manually)
+MANUAL_MODE = os.environ.get("INPUT_MODE", "LIVE") 
+MANUAL_TARGET = os.environ.get("INPUT_COMPANY", "").strip()
+
+# WATCHLIST (Your 18 Companies)
 WATCHLIST = [
     "CENTUM", "SUPRIYA LIFESCI", "STYLAM", "MRS BECTORS", "TIPS MUSIC",
     "CONTROL PRINT", "YATHARTH", "PRECISION WIRES", "PREC. WIRES", "WONDERLA", 
@@ -16,110 +25,106 @@ WATCHLIST = [
     "SANGHVI MOVERS", "JASH ENGINEERING", "FINEOTEX", "ANTONY WASTE"
 ]
 
-# Indian Standard Time (Essential for correct filtering)
 IST = pytz.timezone('Asia/Kolkata')
-
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "*/*",
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
     "Referer": "https://www.bseindia.com/"
 }
 
-def send_alert(company, subject, link, source):
-    """Sends the notification to your phone"""
-    msg = (
-        f"🚨 **{company}** ({source})\n"
-        f"📝 {subject}\n"
-        f"🔗 [View Document]({link})"
-    )
+def send_telegram(text, parse_mode="Markdown"):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     payload = {
-        "chat_id": CHAT_ID, 
-        "text": msg, 
-        "parse_mode": "Markdown",
+        "chat_id": CHAT_ID,
+        "text": text,
+        "parse_mode": parse_mode,
         "disable_web_page_preview": True
     }
-    try:
-        requests.post(url, json=payload, timeout=5)
-    except Exception as e:
-        print(f"Alert Failed: {e}")
+    requests.post(url, json=payload)
 
-def check_watchlist(company_name):
-    """Returns True if the company is in your list"""
-    if not company_name: return False
-    company_upper = company_name.upper()
-    for watch in WATCHLIST:
-        if watch in company_upper:
-            return True
-    return False
+def get_target_companies():
+    """Decides which companies to scan based on the Trigger"""
+    # 1. Automatic Polling -> Scan EVERYTHING
+    if EVENT_NAME == "schedule":
+        return WATCHLIST, "LIVE"
+    
+    # 2. Manual Trigger -> Check user inputs
+    if MANUAL_TARGET:
+        # User asked for specific company (e.g. "Supriya")
+        return [MANUAL_TARGET], MANUAL_MODE
+    else:
+        # User left company blank -> Scan EVERYTHING
+        return WATCHLIST, MANUAL_MODE
 
 def check_bse():
-    print("Scanning BSE...")
+    targets, mode = get_target_companies()
+    
+    if mode == "HISTORY":
+        print(f"📚 Fetching History for: {targets}")
+        send_telegram(f"⏳ **Fetching History for:** `{targets[0]}`...")
+    else:
+        print("🔴 Running Live Scan...")
+
     url = "https://api.bseindia.com/BseIndiaAPI/api/AnnSubCategoryGetData/w?categ=0"
+    
     try:
-        # 1. Fetch Data
-        response = requests.get(url, headers=HEADERS, timeout=10)
+        response = requests.get(url, headers=HEADERS, timeout=15)
         data = response.json()
         
-        # 2. Define "New" (Last 15 mins)
         now = datetime.now(IST)
-        cutoff = now - timedelta(minutes=15)
-
+        cutoff = now - timedelta(minutes=15) # For Live Polling
+        
+        history_buffer = []
+        
         for item in data.get('Table', []):
-            # Parse Time
-            news_dt = item.get('NEWS_DT') # Format: 2024-02-01T14:30:00
+            name = item.get('SLONGNAME')
+            
+            # Smart Matching: Check if this news item matches our Target List
+            match_found = False
+            for t in targets:
+                if t.upper() in name.upper():
+                    match_found = True
+                    break
+            
+            if not match_found: continue
+
+            # Extract Data
+            news_dt = item.get('NEWS_DT')
             try:
                 filing_time = IST.localize(datetime.strptime(news_dt, "%Y-%m-%dT%H:%M:%S"))
             except:
                 continue
 
-            # 3. Filter by Time & Watchlist
-            if filing_time > cutoff:
-                name = item.get('SLONGNAME')
-                if check_watchlist(name):
-                    subject = item.get('NEWSSUB')
-                    link = f"https://www.bseindia.com/xml-data/corpfiling/AttachLive/{item.get('ATTACHMENTNAME')}"
-                    
-                    print(f"FOUND: {name}")
-                    send_alert(name, subject, link, "BSE")
+            subject = item.get('NEWSSUB')
+            link = f"https://www.bseindia.com/xml-data/corpfiling/AttachLive/{item.get('ATTACHMENTNAME')}"
+            
+            # --- LOGIC BRANCHING ---
+            
+            # BRANCH A: HISTORY MODE (Return last 5 updates, regardless of time)
+            if mode == "HISTORY":
+                date_pretty = filing_time.strftime('%d-%b %H:%M')
+                history_buffer.append(f"🗓 `{date_pretty}`\n**{name}**\n{subject}\n🔗 [PDF]({link})")
+                if len(history_buffer) >= 5: break
+
+            # BRANCH B: LIVE POLLING (Only return if < 15 mins old)
+            elif mode == "LIVE":
+                if filing_time > cutoff:
+                    msg = f"🚨 **LIVE UPDATE | {name}**\n📝 {subject}\n🔗 [Read Document]({link})"
+                    send_telegram(msg)
+                    print(f"Sent Alert for {name}")
+
+        # Send Compiled History
+        if mode == "HISTORY":
+            if history_buffer:
+                final_msg = f"📂 **Last 5 Updates for {targets[0]}**\n\n" + "\n\n".join(history_buffer)
+                send_telegram(final_msg)
+            else:
+                send_telegram(f"❌ No recent data found for **{targets[0]}** in BSE feeds.")
 
     except Exception as e:
-        print(f"BSE Error: {e}")
-
-# Note: NSE often blocks cloud servers. This function tries, but BSE is the primary reliable source.
-def check_nse():
-    print("Scanning NSE...")
-    try:
-        session = requests.Session()
-        session.headers.update(HEADERS)
-        # Cookie handshake
-        session.get("https://www.nseindia.com", timeout=10)
-        
-        url = "https://www.nseindia.com/api/corporate-announcements?index=equities"
-        response = session.get(url, timeout=10)
-        data = response.json()
-
-        now = datetime.now(IST)
-        cutoff = now - timedelta(minutes=15)
-
-        for item in data[:20]:
-            date_str = item.get('sort_date')
-            try:
-                filing_time = IST.localize(datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S"))
-            except:
-                continue
-
-            if filing_time > cutoff:
-                symbol = item.get('symbol')
-                if check_watchlist(symbol):
-                    desc = item.get('desc')
-                    link = item.get('attchmntText')
-                    print(f"FOUND: {symbol}")
-                    send_alert(symbol, desc, link, "NSE")
-
-    except Exception:
-        print("NSE Access Blocked (Standard for Cloud IPs). relying on BSE.")
+        print(f"Error: {e}")
+        # Only alert on error if it was a manual request (don't spam on polling)
+        if EVENT_NAME == "workflow_dispatch":
+            send_telegram(f"⚠️ System Error: {str(e)}")
 
 if __name__ == "__main__":
     check_bse()
-    check_nse()
