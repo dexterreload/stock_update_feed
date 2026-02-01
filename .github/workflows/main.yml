@@ -27,13 +27,15 @@ jobs:
       - uses: actions/setup-python@v4
         with:
           python-version: '3.9'
-      - run: pip install requests pytz
+      
+      # THIS IS THE CRITICAL FIX: Installing Selenium
+      - name: Install Dependencies
+        run: pip install requests pytz selenium webdriver-manager
       
       - name: Execute Brain
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          # Pass GitHub Context & Inputs
           GITHUB_EVENT_NAME: ${{ github.event_name }}
           INPUT_MODE: ${{ inputs.mode }}
           INPUT_COMPANY: ${{ inputs.company }}
