@@ -1,27 +1,42 @@
-name: Watchlist Monitor
+name: Monk Mode System
 
 on:
+  # 1. THE AUTOMATIC POLLER (Every 10 mins)
   schedule:
-    - cron: '*/10 * * * *' # Runs every 10 minutes
-  workflow_dispatch: # Allows manual testing button
+    - cron: '*/10 * * * *'
+  
+  # 2. THE MANUAL MENU (On Request)
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Action Mode'
+        required: true
+        default: 'HISTORY'
+        type: choice
+        options:
+        - HISTORY
+        - LIVE_CHECK_NOW
+      company:
+        description: 'Company Name (Leave empty for all)'
+        required: false
+        default: ''
 
 jobs:
-  check-stocks:
+  run-engine:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v3
-
-      - name: Setup Python
-        uses: actions/setup-python@v4
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
         with:
           python-version: '3.9'
-
-      - name: Install Libraries
-        run: pip install requests pytz
-
-      - name: Run Monitor
+      - run: pip install requests pytz
+      
+      - name: Execute Brain
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # Pass GitHub Context & Inputs to Python
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          INPUT_MODE: ${{ inputs.mode }}
+          INPUT_COMPANY: ${{ inputs.company }}
         run: python monitor.py
