@@ -1,42 +1,42 @@
 name: Monk Mode System
 
 on:
-  # 1. THE AUTOMATIC POLLER (Every 10 mins)
+  # 1. AUTOMATIC POLLING (Runs 24/7 every 10 mins)
   schedule:
     - cron: '*/10 * * * *'
   
-  # 2. THE MANUAL MENU (On Request)
+  # 2. MANUAL MENU (Clickable in GitHub App)
   workflow_dispatch:
     inputs:
       mode:
-        description: 'Action Mode'
+        description: 'Select Mode'
         required: true
         default: 'HISTORY'
         type: choice
         options:
         - HISTORY
-        - LIVE_CHECK_NOW
+        - LIVE_TEST
       company:
-        description: 'Company Name (Leave empty for all)'
+        description: 'Company Name (Optional)'
         required: false
         default: ''
 
 jobs:
-  run-engine:
+  run-logic:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
       - uses: actions/setup-python@v4
         with:
-          python-version: '3.9'
-      - run: pip install requests pytz
+          python-version: '3.10'
       
-      - name: Execute Brain
+      - name: Install Requirements
+        run: pip install requests pytz
+
+      - name: Execute Monk Logic
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          # Pass GitHub Context & Inputs to Python
-          GITHUB_EVENT_NAME: ${{ github.event_name }}
-          INPUT_MODE: ${{ inputs.mode }}
+          INPUT_MODE: ${{ inputs.mode || 'LIVE' }} # Default to LIVE for Cron
           INPUT_COMPANY: ${{ inputs.company }}
         run: python monitor.py
